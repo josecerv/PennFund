@@ -1,0 +1,1185 @@
+---
+title: "Penn Med Field Experiment (N=402,931)"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  pdf_document: 
+    toc: yes
+    toc_depth: 3
+    fig_caption: true
+header-includes:
+  \renewcommand{\contentsname}{Items}
+   \usepackage{fvextra}
+   \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(lmtest)
+library(sandwich)
+library(parameters)
+library(pander)
+library(stargazer)
+library(car)
+```
+
+```{r include=FALSE}
+if ( (!is.null(knitr::current_input()))) {
+  if (("pdf_document" ==
+                rmarkdown::all_output_formats(knitr::current_input())[1])) {
+      stargazer_type <- "latex"
+  }
+} else {
+  stargazer_type <- "text"
+}
+
+robust_summary <- function(model) {
+    # Calculating robust standard errors
+    robust_se <- sqrt(diag(vcovHC(model, type = "HC3")))
+
+    # Getting original model summary
+    model_summary <- summary(model)
+
+    # Updating standard errors, t-values, and p-values in the coefficients table
+    model_summary$coefficients[, "Std. Error"] <- robust_se
+    model_summary$coefficients[, "t value"] <- model_summary$coefficients[, "Estimate"] / robust_se
+    model_summary$coefficients[, "Pr(>|t|)"] <- 2 * pt(-abs(model_summary$coefficients[, "t value"]), df = model_summary$df[2], lower.tail = TRUE)
+
+    return(model_summary)
+}
+robust_confint <- function(model, level = 0.95) {
+    # Calculating robust standard errors
+    robust_se <- sqrt(diag(vcovHC(model, type = "HC3")))
+
+    # Getting the coefficients
+    est <- coef(model)
+
+    # Calculating the critical value for the t-distribution
+    alpha <- 1 - level
+    t_crit <- qt(1 - alpha / 2, df = df.residual(model))
+
+    # Calculating the confidence intervals
+    lower <- est - t_crit * robust_se
+    upper <- est + t_crit * robust_se
+
+    # Combining into a matrix
+    confint <- cbind(lower, upper)
+    rownames(confint) <- names(est)
+    colnames(confint) <- c("2.5 %", "97.5 %")
+
+    return(confint)
+}
+
+```
+
+\newpage
+
+```{r include=FALSE}
+# Load the Excel file
+excel_file <- "PennFund.xlsx"
+eml_master <- read_excel(
+  path = excel_file,
+  sheet = "EML Master Honor Roll Dec2024",
+  col_types = "guess"
+)
+
+click_data <- read_excel(
+  path = excel_file,
+  sheet = "Click Data",
+  col_types = "guess"
+)
+
+# Convert date columns to datetime
+eml_master <- eml_master %>%
+  mutate(
+    `Gift Date` = as_datetime(`Gift Date`),
+    `HR Open Date and Time` = as_datetime(`HR Open Date and Time`),
+    DOB = as_datetime(DOB),
+    `HR Email Opened` = case_when(
+      `HR Email Opened` == 1 ~ 1,
+      TRUE ~ 0)
+  )
+
+click_data <- click_data %>%
+  mutate(
+    `Click Date` = as_datetime(`Click Date`)
+  )
+
+# Rename columns to more usable variable names
+eml_master <- eml_master %>%
+  rename(
+    id = ID,
+    in_crm = `In CRM`,
+    made_gift = `Made Gift`,
+    gift_amount = `Gift Amount`,
+    gift_date = `Gift Date`,
+    email_opened = `HR Email Opened`,
+    email_open_date = `HR Open Date and Time`,
+    engagement_score = `Engagement Score`,
+    condition = `Honor Roll Group`,
+    date_added = `Date Added`,
+    gender = Gender,
+    marital_status = MaritalStatus,
+    dob = DOB,
+    age = Age
+  )
+
+
+click_data <- click_data %>%
+  rename(
+    id = ID,
+    associated_email = `Associated Email`,
+    job_id = JobID,
+    click_date = `Click Date`,
+    link_name = LinkName,
+    link_content = LinkContent,
+    is_unique = IsUnique
+  )
+
+# Create age variable based on DOB
+eml_master <- eml_master %>%
+  mutate(
+    age = year(ymd(format(Sys.Date(), "%Y-%m-%d"))) - year(dob),
+    man = ifelse(gender == "Male", 1, 0)
+  )
+
+# Convert conditions to factors
+eml_master$condition <- factor(eml_master$condition, levels = c("Control", "Explicit", "Excuse"))
+
+# Filter click data to clicks related to our email campaigns
+click_data <- click_data %>%
+  filter(grepl("Honor Roll Touch", associated_email))
+```
+
+```{r include=FALSE}
+# Identify unique clickers, taking only the first click date
+click_data_campaign <- click_data %>%
+  filter(grepl("Honor Roll Touch", link_name)) %>%
+  group_by(id) %>%
+  arrange(click_date) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(id, click_date, associated_email) %>%
+  rename(first_click_date = click_date)
+
+# Merge the click data with the master data
+master_data <- left_join(eml_master, click_data_campaign, by = "id")
+
+# Create click-through indicator
+master_data <- master_data %>%
+  mutate(
+    clicked_email_1 = ifelse(!is.na(first_click_date) &
+                             grepl("Honor Roll Touch 1", associated_email) &
+                             email_opened == 1 &
+                             first_click_date <= ymd_hms("2024-12-19 00:00:00"), 1, 0),
+        clicked_email_all = ifelse(!is.na(first_click_date) &
+                                   email_opened == 1 &
+                                    first_click_date <= ymd_hms("2025-01-01 00:00:00"), 1, 0)
+
+  )
+
+# Define email send dates
+email1_send_date <- ymd_hms("2024-12-12 00:00:00")
+email2_send_date <- ymd_hms("2024-12-19 00:00:00")
+email3_send_date <- ymd_hms("2024-12-27 00:00:00")
+campaign_end_date <- ymd_hms("2024-12-31 23:59:59") # December 31, 11:59 PM ET
+
+# Modify master_data to include opened_email_1 and opened_email_all variables
+master_data <- master_data %>%
+  mutate(
+    # Determine if Email #1 was opened between Email #1 send and Email #2 send
+    opened_email_1 = ifelse(
+      !is.na(email_open_date) &
+        email_open_date >= email1_send_date &
+        email_open_date < email2_send_date,
+      1, 0
+    ),
+    # Use email_opened for opens across all emails (assuming it was updated accordingly)
+    opened_email_all = ifelse(
+      email_opened == 1 &
+        email_open_date <= campaign_end_date, 1, 0
+    )
+  )
+
+
+```
+
+
+## Open Rates
+### Summary Table
+
+```{r echo=FALSE, results="asis"}
+# Define email dates
+email1_send_date <- ymd_hms("2024-12-12 00:00:00")
+email2_send_date <- ymd_hms("2024-12-19 00:00:00")
+email3_send_date <- ymd_hms("2024-12-27 00:00:00")
+campaign_end_date <- ymd_hms("2024-12-31 23:59:59")
+
+# Calculate total N
+total_N <- nrow(master_data)
+
+# Adjust condition labels and create email open indicators
+master_data <- master_data %>%
+  mutate(
+    Condition = case_when(
+      condition == "Excuse" ~ "Prosocial Excuse",
+      TRUE ~ as.character(condition)
+    ),
+    # Define who opened each email
+    opened_email_1 = case_when(
+      !is.na(email_open_date) & 
+        email_open_date >= email1_send_date & 
+        email_open_date < email2_send_date ~ 1,
+      TRUE ~ 0
+    ),
+    opened_email_2 = case_when(
+      !is.na(email_open_date) & 
+        email_open_date >= email2_send_date & 
+        email_open_date < email3_send_date ~ 1,
+      TRUE ~ 0
+    ),
+    opened_email_3 = case_when(
+      !is.na(email_open_date) & 
+        email_open_date >= email3_send_date & 
+        email_open_date <= campaign_end_date ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+
+# Calculate opens for Email 1 by condition and total
+email1_data <- master_data %>%
+  group_by(Condition) %>%
+  summarize(
+    opens = sum(opened_email_1, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    email = "Email 1",
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)")
+  )
+
+# Add total for Email 1
+email1_total <- master_data %>%
+  summarize(
+    opens = sum(opened_email_1, na.rm = TRUE),
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)"),
+    email = "Email 1",
+    Condition = "Total"
+  )
+
+# Calculate opens for Email 2 by condition and total
+email2_data <- master_data %>%
+  group_by(Condition) %>%
+  summarize(
+    opens = sum(opened_email_2, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    email = "Email 2",
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)")
+  )
+
+# Add total for Email 2
+email2_total <- master_data %>%
+  summarize(
+    opens = sum(opened_email_2, na.rm = TRUE),
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)"),
+    email = "Email 2",
+    Condition = "Total"
+  )
+
+# Calculate opens for Email 3 by condition and total
+email3_data <- master_data %>%
+  group_by(Condition) %>%
+  summarize(
+    opens = sum(opened_email_3, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    email = "Email 3",
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)")
+  )
+
+# Add total for Email 3
+email3_total <- master_data %>%
+  summarize(
+    opens = sum(opened_email_3, na.rm = TRUE),
+    percentage = (opens / total_N) * 100,
+    `Count (Percentage of N)` = paste0(opens, " (", round(percentage, 2), "%)"),
+    email = "Email 3",
+    Condition = "Total"
+  )
+
+# Combine all email data including totals
+email_open_df <- bind_rows(
+  email1_data, email1_total,
+  email2_data, email2_total,
+  email3_data, email3_total
+) %>%
+  select(email, Condition, `Count (Percentage of N)`)
+
+# Create the final table
+email_open_table <- email_open_df %>%
+  pivot_wider(
+    names_from = Condition,
+    values_from = `Count (Percentage of N)`
+  ) %>%
+  select(email, Control, `Prosocial Excuse`, Explicit, Total) # Reorder columns
+
+# Ensure the order of emails
+email_order <- c("Email 1", "Email 2", "Email 3")
+email_open_table$email <- factor(email_open_table$email, levels = email_order)
+email_open_table <- email_open_table %>%
+  arrange(email)
+
+# Display the table using pander
+pander(email_open_table,
+       caption = "Counts and Percentages of Email Opens by Condition",
+       style = "rmarkdown",
+       split.table = Inf)
+
+```
+
+
+
+### Open Rates for Email 1 and Combined Emails
+
+```{r echo=FALSE, results="asis"}
+# Regression model
+model_email1_open <- lm(opened_email_1 ~ condition, data = master_data)
+
+# Calculate robust standard errors
+robust_se_email1_open <- coeftest(model_email1_open, vcov = vcovHC(model_email1_open, type = "HC3"))[, "Std. Error"]
+
+# Regression model
+model_email_all_open <- lm(opened_email_all ~ condition, data = master_data)
+
+# Calculate robust standard errors
+robust_se_email_all_open <- coeftest(model_email_all_open, vcov = vcovHC(model_email_all_open, type = "HC3"))[, "Std. Error"]
+
+# Use stargazer to output the model summary
+stargazer(model_email1_open, model_email_all_open,
+          type = "latex",                          # Output as text in the R markdown document
+          header = F,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),              # Remove F-statistic and standard error of regression
+          report = "vc*",
+          se = list(robust_se_email1_open, robust_se_email_all_open),       # Supply robust standard errors
+          title = "OLS Model Results for Email 1 Open Rates", # Add a title
+          covariate.labels = c("Explicit Condition", "Prosocial Excuse"), # Rename covariates
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Open (Email 1 Period)", "Open (Full Campaign)"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = F
+          )
+
+```
+
+- Open rates are significantly different across conditions for Email 1 and combined emails. So we will analyze all participants, as pre-registered.
+
+
+\newpage
+
+## Click Rates (DV1)
+### Summary
+
+```{r echo=FALSE, results="asis"}
+# Get total N from master_data
+total_N <- nrow(master_data)
+
+# Filter for only the Honor Roll Touches to start
+email_data_table <- master_data %>%
+    filter(grepl("Honor Roll Touch", associated_email))
+
+# Extract the email number from the 'associated_email' column
+email_data_table <- email_data_table %>%
+  mutate(
+    email_number = case_when(
+      grepl("Honor Roll Touch 1", associated_email) ~ "Email 1",
+      grepl("Honor Roll Touch 2", associated_email) ~ "Email 2",
+      grepl("Honor Roll Touch 3", associated_email) ~ "Email 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(email_number))
+
+# Get the cross-tabulation by email number and condition
+email_touch_counts <- table(email_data_table$email_number, email_data_table$condition)
+
+# Calculate percentages based on total N instead of row-wise
+email_touch_percentages <- sweep(email_touch_counts, MARGIN = 2, 
+                               STATS = total_N, 
+                               FUN = "/") * 100
+
+# Convert to data frames
+email_touch_df <- as.data.frame.matrix(email_touch_counts)
+email_touch_percentage_df <- as.data.frame.matrix(round(email_touch_percentages, 2))
+
+# Add row names as a column
+email_touch_df <- email_touch_df %>%
+  rownames_to_column(var = "Email Touch")
+
+email_touch_percentage_df <- email_touch_percentage_df %>%
+  rownames_to_column(var = "Email Touch")
+
+# Combine the counts and percentages into one table
+email_touch_df <- email_touch_df %>%
+  left_join(email_touch_percentage_df, by = "Email Touch") %>%
+  mutate(
+    Control = paste0(`Control.x`, " (", `Control.y`, "%)"),
+    `Prosocial Excuse` = paste0(`Excuse.x`, " (", `Excuse.y`, "%)"),  # Changed column name here
+    Explicit = paste0(`Explicit.x`, " (", `Explicit.y`, "%)"),
+    Total = rowSums(select(., `Control.x`:`Explicit.x`)),
+    Total_percentage = (Total / total_N) * 100,
+    Total = paste0(Total, " (", round(Total_percentage, 2), "%)")
+  ) %>%
+  select("Email Touch", Control, "Prosocial Excuse", Explicit, Total)  # Updated select statement
+
+# Display the table using pander
+pander(email_touch_df,
+       caption = "Counts and Percentages of Email Clicks by Condition")
+
+
+```
+
+
+### Primary Analyses (DV1): Click-Through Rates (Email 1 + Combined Emails)
+
+
+```{r echo=FALSE, results="asis"}
+# Filter data, since email open rates differed
+email1_data <- master_data
+email_all_data <- master_data
+
+
+# Adjust condition labels in the data
+# Replace 'Excuse' with 'Prosocial Excuse' in 'condition' variable
+master_data$condition <- as.factor(master_data$condition)
+levels(master_data$condition)[levels(master_data$condition) == 'Excuse'] <- 'Prosocial Excuse'
+
+# For modeling, create a version of 'condition' without spaces to avoid issues in variable names
+master_data$condition_model <- factor(master_data$condition)
+levels(master_data$condition_model) <- c('Control', 'ProsocialExcuse', 'Explicit')
+
+# Ensure 'Control' is the reference level
+master_data$condition_model <- relevel(master_data$condition_model, ref = 'Control')
+
+# Update 'email1_data' and 'email_all_data' to include 'condition_model'
+email1_data <- email1_data %>%
+  mutate(
+    condition = master_data$condition,
+    condition_model = master_data$condition_model
+  )
+
+email_all_data <- email_all_data %>%
+  mutate(
+    condition = master_data$condition,
+    condition_model = master_data$condition_model
+  )
+
+# First Model: Email 1
+
+# Regression model with adjusted condition variable
+model_email1 <- lm(clicked_email_1 ~ condition_model, data = email1_data)
+
+# Calculate robust standard errors
+robust_se_email1 <- coeftest(model_email1, vcov = vcovHC(model_email1, type = "HC3"))[, "Std. Error"]
+
+# Perform the Wald test to compare Prosocial Excuse and Explicit conditions
+wald_test1 <- linearHypothesis(model_email1,
+                               "condition_modelProsocialExcuse = condition_modelExplicit",
+                               vcov. = vcovHC(model_email1, type = "HC3"))
+
+# Extract Wald test results
+wald_Fstat_1 <- wald_test1$"F"[2]
+wald_df1_1 <- wald_test1$"Df"[2]
+wald_df2_1 <- wald_test1$"Res.Df"[2]
+wald_pvalue_1 <- wald_test1$"Pr(>F)"[2]
+
+# Second Model: All Emails
+
+# Regression model with adjusted condition variable
+model_email_all <- lm(clicked_email_all ~ condition_model, data = email_all_data)
+
+# Calculate robust standard errors
+robust_se_email_all <- coeftest(model_email_all, vcov = vcovHC(model_email_all, type = "HC3"))[, "Std. Error"]
+
+# Perform the Wald test to compare Prosocial Excuse and Explicit conditions
+wald_test2 <- linearHypothesis(model_email_all,
+                               "condition_modelProsocialExcuse = condition_modelExplicit",
+                               vcov. = vcovHC(model_email_all, type = "HC3"))
+
+# Extract Wald test results
+wald_Fstat_2 <- wald_test2$"F"[2]
+wald_df1_2 <- wald_test2$"Df"[2]
+wald_df2_2 <- wald_test2$"Res.Df"[2]
+wald_pvalue_2 <- wald_test2$"Pr(>F)"[2]
+
+# Prepare the Wald test line to add to the table
+wald_line <- list(
+  c("Wald Test (Prosocial Excuse = Explicit)",
+    sprintf("F(%d, %.0f) = %.2f, p = %.3g", wald_df1_1, wald_df2_1, wald_Fstat_1, wald_pvalue_1),
+    sprintf("F(%d, %.0f) = %.2f, p = %.3g", wald_df1_2, wald_df2_2, wald_Fstat_2, wald_pvalue_2))
+)
+
+# Use stargazer to output the model summaries with robust standard errors
+stargazer(model_email1, model_email_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_email1, robust_se_email_all),
+          title = "OLS Model Results for Click-Through Rates",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Clicked (Email 1 Period", "Clicked (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),            # Define custom symbols
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),        # Define custom p-value cutoffs
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+          )
+
+# Optionally, print the Wald test results separately
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 1:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_1, wald_df2_1, wald_Fstat_1, wald_pvalue_1))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 2:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_2, wald_df2_2, wald_Fstat_2, wald_pvalue_2))
+```
+
+\newpage
+
+## Donation Incidence (DV2)
+### Summary
+
+```{r echo=FALSE, results="asis"}
+options(scipen=999)
+# Get total N from master_data
+total_N <- nrow(master_data)
+
+# Define email periods
+email1_start <- ymd_hms("2024-12-12 00:00:00")
+email2_start <- ymd_hms("2024-12-19 00:00:00")
+email3_start <- ymd_hms("2024-12-27 00:00:00")
+campaign_end <- ymd_hms("2024-12-31 23:59:59")
+
+# Calculate donations by condition and email period
+donation_summary <- master_data %>%
+  mutate(
+    # Donation during Email 1 period (between Email 1 and Email 2 send)
+    donated_email_1 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date < email2_start, 
+      1, 0
+    ),
+    # Donation during Email 2 period (between Email 2 and Email 3 send)
+    donated_email_2 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email2_start & 
+        gift_date < email3_start,
+      1, 0
+    ),
+    # Donation during Email 3 period (between Email 3 and campaign end)
+    donated_email_3 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email3_start & 
+        gift_date <= campaign_end,
+      1, 0
+    ),
+    # Any donation during the campaign
+    donated_any = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date <= campaign_end,
+      1, 0
+    )
+  ) %>%
+  group_by(condition) %>%
+  summarize(
+    donations_email1 = sum(donated_email_1, na.rm = TRUE),
+    donations_email2 = sum(donated_email_2, na.rm = TRUE),
+    donations_email3 = sum(donated_email_3, na.rm = TRUE),
+    donations_total = sum(donated_any, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Calculate totals
+total_donations <- donation_summary %>%
+  summarize(
+    donations_email1 = sum(donations_email1),
+    donations_email2 = sum(donations_email2),
+    donations_email3 = sum(donations_email3),
+    donations_total = sum(donations_total)
+  )
+
+# Create summary table
+donation_table <- data.frame(
+  "Email Period" = c("Email 1 Period", "Email 2 Period", "Email 3 Period", "Total Campaign"),
+  
+  "Control" = c(
+    paste0(donation_summary$donations_email1[donation_summary$condition == "Control"],
+           " (", round(donation_summary$donations_email1[donation_summary$condition == "Control"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email2[donation_summary$condition == "Control"],
+           " (", round(donation_summary$donations_email2[donation_summary$condition == "Control"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email3[donation_summary$condition == "Control"],
+           " (", round(donation_summary$donations_email3[donation_summary$condition == "Control"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_total[donation_summary$condition == "Control"],
+           " (", round(donation_summary$donations_total[donation_summary$condition == "Control"]/total_N*100, 5), "%)")
+  ),
+  
+  "Prosocial Excuse" = c(
+    paste0(donation_summary$donations_email1[donation_summary$condition == "Prosocial Excuse"],
+           " (", round(donation_summary$donations_email1[donation_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email2[donation_summary$condition == "Prosocial Excuse"],
+           " (", round(donation_summary$donations_email2[donation_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email3[donation_summary$condition == "Prosocial Excuse"],
+           " (", round(donation_summary$donations_email3[donation_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_total[donation_summary$condition == "Prosocial Excuse"],
+           " (", round(donation_summary$donations_total[donation_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)")
+  ),
+  
+  "Explicit" = c(
+    paste0(donation_summary$donations_email1[donation_summary$condition == "Explicit"],
+           " (", round(donation_summary$donations_email1[donation_summary$condition == "Explicit"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email2[donation_summary$condition == "Explicit"],
+           " (", round(donation_summary$donations_email2[donation_summary$condition == "Explicit"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_email3[donation_summary$condition == "Explicit"],
+           " (", round(donation_summary$donations_email3[donation_summary$condition == "Explicit"]/total_N*100, 5), "%)"),
+    paste0(donation_summary$donations_total[donation_summary$condition == "Explicit"],
+           " (", round(donation_summary$donations_total[donation_summary$condition == "Explicit"]/total_N*100, 5), "%)")
+  ),
+  
+  "Total" = c(
+    paste0(total_donations$donations_email1,
+           " (", round(total_donations$donations_email1/total_N*100, 5), "%)"),
+    paste0(total_donations$donations_email2,
+           " (", round(total_donations$donations_email2/total_N*100, 5), "%)"),
+    paste0(total_donations$donations_email3,
+           " (", round(total_donations$donations_email3/total_N*100, 5), "%)"),
+    paste0(total_donations$donations_total,
+           " (", round(total_donations$donations_total/total_N*100, 5), "%)")
+  )
+)
+
+# Display the table using pander
+pander(donation_table,
+       caption = "Counts and Percentages of Donations by Condition and Email Period")
+```
+
+### Primary Analyses (DV2): Donation Incidence (Email 1 + Combined Emails)
+
+```{r echo=FALSE, results="asis"}
+# Update master_data with correct donation period indicators
+master_data <- master_data %>%
+  mutate(
+    donated_email_1 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date < email2_start, 
+      1, 0
+    ),
+    donated_any = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date <= campaign_end,
+      1, 0
+    )
+  )
+
+# First Model: Email 1 Period
+model_donation1 <- lm(donated_email_1 ~ condition_model, data = master_data)
+robust_se_donation1 <- coeftest(model_donation1, vcov = vcovHC(model_donation1, type = "HC3"))[, "Std. Error"]
+
+# Wald test for Email 1
+wald_test_donation1 <- linearHypothesis(model_donation1,
+                                      "condition_modelProsocialExcuse = condition_modelExplicit",
+                                      vcov. = vcovHC(model_donation1, type = "HC3"))
+
+# Extract Wald test results for Email 1
+wald_Fstat_1 <- wald_test_donation1$"F"[2]
+wald_df1_1 <- wald_test_donation1$"Df"[2]
+wald_df2_1 <- wald_test_donation1$"Res.Df"[2]
+wald_pvalue_1 <- wald_test_donation1$"Pr(>F)"[2]
+
+# Second Model: All Emails Combined
+model_donation_all <- lm(donated_any ~ condition_model, data = master_data)
+robust_se_donation_all <- coeftest(model_donation_all, vcov = vcovHC(model_donation_all, type = "HC3"))[, "Std. Error"]
+
+# Wald test for All Emails
+wald_test_donation_all <- linearHypothesis(model_donation_all,
+                                         "condition_modelProsocialExcuse = condition_modelExplicit",
+                                         vcov. = vcovHC(model_donation_all, type = "HC3"))
+
+# Extract Wald test results for All Emails
+wald_Fstat_2 <- wald_test_donation_all$"F"[2]
+wald_df1_2 <- wald_test_donation_all$"Df"[2]
+wald_df2_2 <- wald_test_donation_all$"Res.Df"[2]
+wald_pvalue_2 <- wald_test_donation_all$"Pr(>F)"[2]
+
+# Prepare the Wald test line for the table
+wald_line <- list(
+  c("Wald Test (Prosocial Excuse = Explicit)",
+    sprintf("F(%d, %.0f) = %.2f, p = %.3g", wald_df1_1, wald_df2_1, wald_Fstat_1, wald_pvalue_1),
+    sprintf("F(%d, %.0f) = %.2f, p = %.3g", wald_df1_2, wald_df2_2, wald_Fstat_2, wald_pvalue_2))
+)
+
+# Use stargazer to output the model summaries
+stargazer(model_donation1, model_donation_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_donation1, robust_se_donation_all),
+          title = "OLS Model Results for Donation Incidence",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Donated (Email 1 Period)", "Donated (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results separately
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 1 (Email 1 Period):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_1, wald_df2_1, wald_Fstat_1, wald_pvalue_1))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 2 (Full Campaign):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_2, wald_df2_2, wald_Fstat_2, wald_pvalue_2))
+```
+
+\newpage
+
+## Donation Amount (DV3)
+### Summary
+
+```{r echo=FALSE, results="asis"}
+# Get total N from master_data
+total_N <- nrow(master_data)
+
+# Calculate median and MAD for non-zero donations
+non_zero_donations <- master_data %>%
+  filter(gift_amount > 0)
+median_amount <- median(non_zero_donations$gift_amount, na.rm = TRUE)
+mad_amount <- mad(non_zero_donations$gift_amount, na.rm = TRUE)
+outlier_cutoff <- median_amount + (2.5 * mad_amount)
+
+# Calculate donation amounts by condition and email period
+donation_amount_summary <- master_data %>%
+  mutate(
+    # Amount during Email 1 period
+    amount_email_1 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date < email2_start, 
+      gift_amount, 0
+    ),
+    # Total amount during campaign
+    amount_any = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date <= campaign_end,
+      gift_amount, 0
+    )
+  ) %>%
+  group_by(condition) %>%
+  summarize(
+    amount_email1 = sum(amount_email_1, na.rm = TRUE),
+    amount_total = sum(amount_any, na.rm = TRUE),
+    n_donors_email1 = sum(amount_email_1 > 0, na.rm = TRUE),
+    n_donors_total = sum(amount_any > 0, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Create summary table
+amount_table <- data.frame(
+  "Email Period" = c("Email 1 Period", "Full Campaign"),
+  
+  "Control" = c(
+    paste0("$", format(donation_amount_summary$amount_email1[donation_amount_summary$condition == "Control"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_email1[donation_amount_summary$condition == "Control"], ")"),
+    paste0("$", format(donation_amount_summary$amount_total[donation_amount_summary$condition == "Control"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_total[donation_amount_summary$condition == "Control"], ")")
+  ),
+  
+  "Prosocial Excuse" = c(
+    paste0("$", format(donation_amount_summary$amount_email1[donation_amount_summary$condition == "Prosocial Excuse"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_email1[donation_amount_summary$condition == "Prosocial Excuse"], ")"),
+    paste0("$", format(donation_amount_summary$amount_total[donation_amount_summary$condition == "Prosocial Excuse"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_total[donation_amount_summary$condition == "Prosocial Excuse"], ")")
+  ),
+  
+  "Explicit" = c(
+    paste0("$", format(donation_amount_summary$amount_email1[donation_amount_summary$condition == "Explicit"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_email1[donation_amount_summary$condition == "Explicit"], ")"),
+    paste0("$", format(donation_amount_summary$amount_total[donation_amount_summary$condition == "Explicit"], big.mark=","),
+           " (n=", donation_amount_summary$n_donors_total[donation_amount_summary$condition == "Explicit"], ")")
+  )
+)
+
+# Display the table using pander
+pander(amount_table,
+       caption = "Total Donation Amounts by Condition and Email Period (Number of Donors)")
+```
+
+### Primary Analyses (DV3): Donation Amount (Email 1 + Combined Emails)
+
+```{r echo=FALSE, results="asis"}
+# Calculate median and MAD for non-zero donations
+non_zero_donations <- master_data %>%
+  filter(gift_amount > 0)
+median_amount <- median(non_zero_donations$gift_amount, na.rm = TRUE)
+mad_amount <- mad(non_zero_donations$gift_amount, na.rm = TRUE)
+outlier_cutoff <- median_amount + (2.5 * mad_amount)
+
+# Update master_data with donation amount variables
+master_data <- master_data %>%
+  mutate(
+    # Raw amounts
+    amount_email_1 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date < email2_start, 
+      gift_amount, 0
+    ),
+    amount_any = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date <= campaign_end,
+      gift_amount, 0
+    ),
+    
+    # Log-transformed amounts (adding 1 to handle zeros)
+    log_amount_email_1 = log(amount_email_1 + 1),
+    log_amount_any = log(amount_any + 1),
+    
+    # Amounts with outliers removed
+    amount_email_1_no_outliers = ifelse(
+      amount_email_1 > outlier_cutoff, NA, amount_email_1
+    ),
+    amount_any_no_outliers = ifelse(
+      amount_any > outlier_cutoff, NA, amount_any
+    )
+  )
+
+# Raw amount models
+model_amount1 <- lm(amount_email_1 ~ condition_model, data = master_data)
+model_amount_all <- lm(amount_any ~ condition_model, data = master_data)
+
+# Log-transformed models
+model_log1 <- lm(log_amount_email_1 ~ condition_model, data = master_data)
+model_log_all <- lm(log_amount_any ~ condition_model, data = master_data)
+
+# No outliers models
+model_no_outliers1 <- lm(amount_email_1_no_outliers ~ condition_model, data = master_data)
+model_no_outliers_all <- lm(amount_any_no_outliers ~ condition_model, data = master_data)
+
+# Calculate robust standard errors for all models
+robust_se_amount1 <- coeftest(model_amount1, vcov = vcovHC(model_amount1, type = "HC3"))[, "Std. Error"]
+robust_se_amount_all <- coeftest(model_amount_all, vcov = vcovHC(model_amount_all, type = "HC3"))[, "Std. Error"]
+
+robust_se_log1 <- coeftest(model_log1, vcov = vcovHC(model_log1, type = "HC3"))[, "Std. Error"]
+robust_se_log_all <- coeftest(model_log_all, vcov = vcovHC(model_log_all, type = "HC3"))[, "Std. Error"]
+
+robust_se_no_outliers1 <- coeftest(model_no_outliers1, vcov = vcovHC(model_no_outliers1, type = "HC3"))[, "Std. Error"]
+robust_se_no_outliers_all <- coeftest(model_no_outliers_all, vcov = vcovHC(model_no_outliers_all, type = "HC3"))[, "Std. Error"]
+
+# Raw Amount Results
+stargazer(model_amount1, model_amount_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_amount1, robust_se_amount_all),
+          title = "OLS Model Results for Donation Amount (Raw)",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Amount (Email 1 Period)", "Amount (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+)
+
+# Wald tests for raw amount models
+wald_test_amount1 <- linearHypothesis(model_amount1,
+                                    "condition_modelProsocialExcuse = condition_modelExplicit",
+                                    vcov. = vcovHC(model_amount1, type = "HC3"))
+wald_test_amount_all <- linearHypothesis(model_amount_all,
+                                       "condition_modelProsocialExcuse = condition_modelExplicit",
+                                       vcov. = vcovHC(model_amount_all, type = "HC3"))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Raw Amount Model 1 (Email 1 Period):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_amount1$Df[2], 
+            wald_test_amount1$Res.Df[2], 
+            wald_test_amount1$F[2], 
+            wald_test_amount1$`Pr(>F)`[2]))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Raw Amount Model 2 (Full Campaign):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_amount_all$Df[2], 
+            wald_test_amount_all$Res.Df[2], 
+            wald_test_amount_all$F[2], 
+            wald_test_amount_all$`Pr(>F)`[2]))
+```
+
+\newpage
+
+```{r echo=FALSE, results="asis"}
+
+
+# Log-Transformed Results
+stargazer(model_log1, model_log_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_log1, robust_se_log_all),
+          title = "OLS Model Results for Donation Amount (Log-Transformed)",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Log Amount (Email 1 Period)", "Log Amount (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+)
+
+# Wald tests for log-transformed models
+wald_test_log1 <- linearHypothesis(model_log1,
+                                 "condition_modelProsocialExcuse = condition_modelExplicit",
+                                 vcov. = vcovHC(model_log1, type = "HC3"))
+wald_test_log_all <- linearHypothesis(model_log_all,
+                                    "condition_modelProsocialExcuse = condition_modelExplicit",
+                                    vcov. = vcovHC(model_log_all, type = "HC3"))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Log-Transformed Model 1 (Email 1 Period):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_log1$Df[2], 
+            wald_test_log1$Res.Df[2], 
+            wald_test_log1$F[2], 
+            wald_test_log1$`Pr(>F)`[2]))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Log-Transformed Model 2 (Full Campaign):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_log_all$Df[2], 
+            wald_test_log_all$Res.Df[2], 
+            wald_test_log_all$F[2], 
+            wald_test_log_all$`Pr(>F)`[2]))
+```
+
+\newpage
+
+
+```{r echo=FALSE, results="asis"}
+
+
+# No Outliers Results
+stargazer(model_no_outliers1, model_no_outliers_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_no_outliers1, robust_se_no_outliers_all),
+          title = "OLS Model Results for Donation Amount (Outliers Removed)",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Amount (Email 1 Period)", "Amount (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+)
+
+# Wald tests for no-outliers models
+wald_test_no_outliers1 <- linearHypothesis(model_no_outliers1,
+                                         "condition_modelProsocialExcuse = condition_modelExplicit",
+                                         vcov. = vcovHC(model_no_outliers1, type = "HC3"))
+wald_test_no_outliers_all <- linearHypothesis(model_no_outliers_all,
+                                            "condition_modelProsocialExcuse = condition_modelExplicit",
+                                            vcov. = vcovHC(model_no_outliers_all, type = "HC3"))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for No-Outliers Model 1 (Email 1 Period):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_no_outliers1$Df[2], 
+            wald_test_no_outliers1$Res.Df[2], 
+            wald_test_no_outliers1$F[2], 
+            wald_test_no_outliers1$`Pr(>F)`[2]))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for No-Outliers Model 2 (Full Campaign):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", 
+            wald_test_no_outliers_all$Df[2], 
+            wald_test_no_outliers_all$Res.Df[2], 
+            wald_test_no_outliers_all$F[2], 
+            wald_test_no_outliers_all$`Pr(>F)`[2]))
+```
+
+
+\newpage
+
+## Unsubscribe Rate (DV4)
+### Summary
+
+```{r echo=FALSE, results="asis"}
+# Get total N from master_data
+total_N <- nrow(master_data)
+
+# Process click_data to identify unsubscribes
+unsubscribe_clicks <- click_data %>%
+  filter(link_name == "Unsubscribe") %>%
+  mutate(
+    email_period = case_when(
+      click_date >= email1_start & click_date < email2_start ~ "email1",
+      click_date >= email2_start & click_date < email3_start ~ "email2",
+      click_date >= email3_start & click_date <= campaign_end ~ "email3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  group_by(id) %>%
+  summarize(
+    unsub_email_1 = any(email_period == "email1"),
+    unsub_any = TRUE,
+    .groups = "drop"
+  )
+
+# Merge unsubscribe data with master_data
+master_data <- master_data %>%
+  left_join(unsubscribe_clicks, by = c("id" = "id")) %>%
+  mutate(
+    unsub_email_1 = replace_na(unsub_email_1, FALSE),
+    unsub_any = replace_na(unsub_any, FALSE)
+  )
+
+# Calculate unsubscribes by condition
+unsubscribe_summary <- master_data %>%
+  group_by(condition) %>%
+  summarize(
+    unsubs_email1 = sum(unsub_email_1, na.rm = TRUE),
+    unsubs_total = sum(unsub_any, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Calculate totals
+total_unsubs <- unsubscribe_summary %>%
+  summarize(
+    unsubs_email1 = sum(unsubs_email1),
+    unsubs_total = sum(unsubs_total)
+  )
+
+# Create summary table
+unsubscribe_table <- data.frame(
+  "Email Period" = c("Email 1 Period", "Full Campaign"),
+  
+  "Control" = c(
+    paste0(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Control"],
+           " (", round(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Control"]/total_N*100, 5), "%)"),
+    paste0(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Control"],
+           " (", round(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Control"]/total_N*100, 5), "%)")
+  ),
+  
+  "Prosocial Excuse" = c(
+    paste0(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Prosocial Excuse"],
+           " (", round(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)"),
+    paste0(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Prosocial Excuse"],
+           " (", round(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Prosocial Excuse"]/total_N*100, 5), "%)")
+  ),
+  
+  "Explicit" = c(
+    paste0(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Explicit"],
+           " (", round(unsubscribe_summary$unsubs_email1[unsubscribe_summary$condition == "Explicit"]/total_N*100, 5), "%)"),
+    paste0(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Explicit"],
+           " (", round(unsubscribe_summary$unsubs_total[unsubscribe_summary$condition == "Explicit"]/total_N*100, 5), "%)")
+  ),
+  
+  "Total" = c(
+    paste0(total_unsubs$unsubs_email1,
+           " (", round(total_unsubs$unsubs_email1/total_N*100, 5), "%)"),
+    paste0(total_unsubs$unsubs_total,
+           " (", round(total_unsubs$unsubs_total/total_N*100, 5), "%)")
+  )
+)
+
+# Display the table using pander
+pander(unsubscribe_table,
+       caption = "Counts and Percentages of Unsubscribes by Condition and Email Period")
+```
+
+### Primary Analyses (DV4): Unsubscribe Rate (Email 1 + Combined Emails)
+
+```{r echo=FALSE, results="asis"}
+# First Model: Email 1 Period
+model_unsub1 <- lm(unsub_email_1 ~ condition_model, data = master_data)
+robust_se_unsub1 <- coeftest(model_unsub1, vcov = vcovHC(model_unsub1, type = "HC3"))[, "Std. Error"]
+
+# Wald test for Email 1
+wald_test_unsub1 <- linearHypothesis(model_unsub1,
+                                    "condition_modelProsocialExcuse = condition_modelExplicit",
+                                    vcov. = vcovHC(model_unsub1, type = "HC3"))
+
+# Extract Wald test results for Email 1
+wald_Fstat_1 <- wald_test_unsub1$"F"[2]
+wald_df1_1 <- wald_test_unsub1$"Df"[2]
+wald_df2_1 <- wald_test_unsub1$"Res.Df"[2]
+wald_pvalue_1 <- wald_test_unsub1$"Pr(>F)"[2]
+
+# Second Model: All Emails Combined
+model_unsub_all <- lm(unsub_any ~ condition_model, data = master_data)
+robust_se_unsub_all <- coeftest(model_unsub_all, vcov = vcovHC(model_unsub_all, type = "HC3"))[, "Std. Error"]
+
+# Wald test for All Emails
+wald_test_unsub_all <- linearHypothesis(model_unsub_all,
+                                       "condition_modelProsocialExcuse = condition_modelExplicit",
+                                       vcov. = vcovHC(model_unsub_all, type = "HC3"))
+
+# Extract Wald test results for All Emails
+wald_Fstat_2 <- wald_test_unsub_all$"F"[2]
+wald_df1_2 <- wald_test_unsub_all$"Df"[2]
+wald_df2_2 <- wald_test_unsub_all$"Res.Df"[2]
+wald_pvalue_2 <- wald_test_unsub_all$"Pr(>F)"[2]
+
+# Use stargazer to output the model summaries
+stargazer(model_unsub1, model_unsub_all,
+          type = "latex",
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_unsub1, robust_se_unsub_all),
+          title = "OLS Model Results for Unsubscribe Rate",
+          covariate.labels = c("Prosocial Excuse", "Explicit"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Unsubscribed (Email 1 Period)", "Unsubscribed (Full Campaign)"),
+          star.char = c("***", "**", "*", "+"),
+          star.cutoffs = c(0.1, 0.05, 0.01, 0.001),
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+)
+
+# Print Wald test results separately
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 1 (Email 1 Period):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_1, wald_df2_1, wald_Fstat_1, wald_pvalue_1))
+
+cat("\nWald Test whether Prosocial Excuse == Explicit for Model 2 (Full Campaign):\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n", wald_df1_2, wald_df2_2, wald_Fstat_2, wald_pvalue_2))
+```
+
+\newpage
+
+## Robustness
+
