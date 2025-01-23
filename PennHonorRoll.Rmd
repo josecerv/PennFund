@@ -1809,3 +1809,539 @@ cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
 
 
 ```
+
+\newpage
+
+## Additional Analyses
+
+### Distribution of Prior Clicks
+
+```{r echo=FALSE, results="asis"}
+# Calculate prior click distribution by condition
+prior_click_dist <- master_data %>%
+  group_by(condition) %>%
+  summarize(
+    n_total = n(),
+    n_prior_clicks = sum(prior_click, na.rm = TRUE),
+    prop_prior_clicks = mean(prior_click, na.rm = TRUE) * 100
+  ) %>%
+  mutate(
+    `Prior Click N (%)` = paste0(n_prior_clicks, " (", round(prop_prior_clicks, 2), "%)")
+  ) %>%
+  select(condition, `Prior Click N (%)`)
+
+# Add total row
+total_prior_clicks <- master_data %>%
+  summarize(
+    n_total = n(),
+    n_prior_clicks = sum(prior_click, na.rm = TRUE),
+    prop_prior_clicks = mean(prior_click, na.rm = TRUE) * 100
+  ) %>%
+  mutate(
+    condition = "Total",
+    `Prior Click N (%)` = paste0(n_prior_clicks, " (", round(prop_prior_clicks, 2), "%)")
+  ) %>%
+  select(condition, `Prior Click N (%)`)
+
+# Combine into a single table
+prior_click_table <- bind_rows(prior_click_dist, total_prior_clicks) %>%
+  rename(Condition = condition)
+
+# Display the table using pander
+pander(prior_click_table,
+       caption = "Distribution of Prior Clicks by Condition",
+       split.table = Inf)
+
+# OLS model for prior click
+model_prior_click <- lm(prior_click ~ condition_model, data = master_data)
+robust_se_prior_click <- coeftest(model_prior_click, vcov = vcovHC(model_prior_click, type = "HC3"))[, "Std. Error"]
+
+# Wald test for equivalence between Prosocial Excuse and Explicit conditions
+wald_test_prior_click <- linearHypothesis(model_prior_click,
+                                          "condition_modelProsocialExcuse = condition_modelExplicit",
+                                          vcov. = vcovHC(model_prior_click, type = "HC3"))
+
+# Display the model results
+stargazer(model_prior_click,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_prior_click),
+          title = "OLS Model for Prior Clicks by Condition",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = "Prior Click",
+          notes = "+ p<0.1; * p<0.05; ** p<0.01; *** p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Test for Prior Clicks:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_prior_click$Df[2], wald_test_prior_click$Res.Df[2],
+            wald_test_prior_click$F[2], wald_test_prior_click$`Pr(>F)`[2]))
+```
+
+\newpage
+
+### Donation Incidence (DV2) Among Email Openers
+
+```{r echo=FALSE, results="asis"}
+# Analyze donation behavior among participants who opened emails
+
+# Subset data for participants who opened Email 1
+email1_openers <- master_data %>%
+  filter(opened_email_1 == 1)
+
+# Subset data for participants who opened any email
+email_all_openers <- master_data %>%
+  filter(opened_email_all == 1)
+
+# Summary tables for Email 1 openers
+email1_openers_summary <- email1_openers %>%
+  group_by(condition) %>%
+  summarize(
+    n_openers = n(),
+    n_donated = sum(donated_email_1, na.rm = TRUE),
+    donation_rate = mean(donated_email_1, na.rm = TRUE) * 100,
+    total_amount = sum(amount_email_1, na.rm = TRUE)
+  ) %>%
+  mutate(
+    `Donated N (%)` = paste0(n_donated, " (", round(donation_rate, 3), "%)"),
+    `Total Amount` = paste0("$", format(round(total_amount, 3), big.mark = ","))
+  ) %>%
+  select(condition, n_openers, `Donated N (%)`, `Total Amount`)
+
+# Summary tables for all email openers
+email_all_openers_summary <- email_all_openers %>%
+  group_by(condition) %>%
+  summarize(
+    n_openers = n(),
+    n_donated = sum(donated_any, na.rm = TRUE),
+    donation_rate = mean(donated_any, na.rm = TRUE) * 100,
+    total_amount = sum(amount_any, na.rm = TRUE)
+  ) %>%
+  mutate(
+    `Donated N (%)` = paste0(n_donated, " (", round(donation_rate, 3), "%)"),
+    `Total Amount` = paste0("$", format(round(total_amount, 3), big.mark = ","))
+  ) %>%
+  select(condition, n_openers, `Donated N (%)`, `Total Amount`)
+
+# Display tables
+cat("\n**Donations Among Email 1 Openers**\n")
+pander(email1_openers_summary,
+       caption = "Donation Behavior Among Email 1 Openers",
+       split.table = Inf)
+
+cat("\n**Donations Among All Email Openers**\n")
+pander(email_all_openers_summary,
+       caption = "Donation Behavior Among All Email Openers",
+       split.table = Inf)
+
+# OLS models for donation incidence among Email 1 openers
+model_donate_email1_openers <- lm(donated_email_1 ~ condition_model, data = email1_openers)
+robust_se_donate_email1_openers <- coeftest(model_donate_email1_openers, vcov = vcovHC(model_donate_email1_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_donate_email1_openers <- linearHypothesis(model_donate_email1_openers,
+                                                    "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                    vcov. = vcovHC(model_donate_email1_openers, type = "HC3"))
+
+# OLS models for donation incidence among all email openers
+model_donate_email_all_openers <- lm(donated_any ~ condition_model, data = email_all_openers)
+robust_se_donate_email_all_openers <- coeftest(model_donate_email_all_openers, vcov = vcovHC(model_donate_email_all_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_donate_email_all_openers <- linearHypothesis(model_donate_email_all_openers,
+                                                       "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                       vcov. = vcovHC(model_donate_email_all_openers, type = "HC3"))
+
+# Display the model results
+stargazer(model_donate_email1_openers, model_donate_email_all_openers,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_donate_email1_openers, robust_se_donate_email_all_openers),
+          title = "OLS Models for Donation Incidence Among Email Openers",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Donated (Email 1 Openers)", "Donated (All Email Openers)"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Donation Incidence Among Email Openers:\n")
+cat("Email 1 Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_donate_email1_openers$Df[2], wald_test_donate_email1_openers$Res.Df[2],
+            wald_test_donate_email1_openers$F[2], wald_test_donate_email1_openers$`Pr(>F)`[2]))
+cat("\nAll Email Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_donate_email_all_openers$Df[2], wald_test_donate_email_all_openers$Res.Df[2],
+            wald_test_donate_email_all_openers$F[2], wald_test_donate_email_all_openers$`Pr(>F)`[2]))
+```
+
+\newpage
+
+### Donation Amount (DV3) Among Email Openers
+
+```{r echo=FALSE, results="asis"}
+# This section analyzes donation amounts (DV3) among participants who opened emails.
+# We analyze the data in three ways: raw amounts, log-transformed amounts, and amounts with outliers removed.
+
+# -------------------------------------------------------------
+# Define the email openers datasets (already defined)
+# email1_openers and email_all_openers
+# -------------------------------------------------------------
+
+## Calculate median and MAD for non-zero donations among email openers
+non_zero_donations_openers <- email_all_openers %>%
+  filter(gift_amount > 0)
+median_amount_openers <- median(non_zero_donations_openers$gift_amount, na.rm = TRUE)
+mad_amount_openers <- mad(non_zero_donations_openers$gift_amount, na.rm = TRUE)
+outlier_cutoff_openers <- median_amount_openers + (2.5 * mad_amount_openers)
+
+# -------------------------------------------------------------
+# Create amount variables and their transformations for openers
+# -------------------------------------------------------------
+
+# For Email 1 Openers
+email1_openers <- email1_openers %>%
+  mutate(
+    # Raw amount
+    amount_email_1 = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date < email2_start, 
+      gift_amount, 0
+    ),
+    # Log-transformed amount (adding 1 to handle zeros)
+    log_amount_email_1 = log(amount_email_1 + 1),
+    # Amount with outliers removed
+    amount_email_1_no_outliers = ifelse(
+      amount_email_1 > outlier_cutoff_openers, NA, amount_email_1
+    )
+  )
+
+# For All Email Openers
+email_all_openers <- email_all_openers %>%
+  mutate(
+    # Raw amount
+    amount_any = ifelse(
+      made_gift == 1 & !is.na(gift_date) & 
+        gift_date >= email1_start & 
+        gift_date <= campaign_end,
+      gift_amount, 0
+    ),
+    # Log-transformed amount (adding 1 to handle zeros)
+    log_amount_any = log(amount_any + 1),
+    # Amount with outliers removed
+    amount_any_no_outliers = ifelse(
+      amount_any > outlier_cutoff_openers, NA, amount_any
+    )
+  )
+
+# -------------------------------------------------------------
+# OLS Models for Donation Amounts (Raw)
+# -------------------------------------------------------------
+
+# Models for Email 1 Openers
+model_amount_raw_email1_openers <- lm(amount_email_1 ~ condition_model, data = email1_openers)
+robust_se_amount_raw_email1_openers <- coeftest(model_amount_raw_email1_openers, vcov = vcovHC(model_amount_raw_email1_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_raw_email1_openers <- linearHypothesis(model_amount_raw_email1_openers,
+                                                        "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                        vcov. = vcovHC(model_amount_raw_email1_openers, type = "HC3"))
+
+# Models for All Email Openers
+model_amount_raw_email_all_openers <- lm(amount_any ~ condition_model, data = email_all_openers)
+robust_se_amount_raw_email_all_openers <- coeftest(model_amount_raw_email_all_openers, vcov = vcovHC(model_amount_raw_email_all_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_raw_email_all_openers <- linearHypothesis(model_amount_raw_email_all_openers,
+                                                           "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                           vcov. = vcovHC(model_amount_raw_email_all_openers, type = "HC3"))
+
+# Display the model results
+stargazer(model_amount_raw_email1_openers, model_amount_raw_email_all_openers,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_amount_raw_email1_openers, robust_se_amount_raw_email_all_openers),
+          title = "OLS Models for Donation Amount (Raw) Among Email Openers",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Amount (Email 1 Openers)", "Amount (All Email Openers)"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Donation Amount (Raw) Among Email Openers:\n")
+cat("Email 1 Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_raw_email1_openers$Df[2], wald_test_amount_raw_email1_openers$Res.Df[2],
+            wald_test_amount_raw_email1_openers$F[2], wald_test_amount_raw_email1_openers$`Pr(>F)`[2]))
+cat("\nAll Email Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_raw_email_all_openers$Df[2], wald_test_amount_raw_email_all_openers$Res.Df[2],
+            wald_test_amount_raw_email_all_openers$F[2], wald_test_amount_raw_email_all_openers$`Pr(>F)`[2]))
+
+# -------------------------------------------------------------
+# OLS Models for Donation Amounts (Log-Transformed)
+# -------------------------------------------------------------
+
+# Models for Email 1 Openers
+model_amount_log_email1_openers <- lm(log_amount_email_1 ~ condition_model, data = email1_openers)
+robust_se_amount_log_email1_openers <- coeftest(model_amount_log_email1_openers, vcov = vcovHC(model_amount_log_email1_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_log_email1_openers <- linearHypothesis(model_amount_log_email1_openers,
+                                                        "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                        vcov. = vcovHC(model_amount_log_email1_openers, type = "HC3"))
+
+# Models for All Email Openers
+model_amount_log_email_all_openers <- lm(log_amount_any ~ condition_model, data = email_all_openers)
+robust_se_amount_log_email_all_openers <- coeftest(model_amount_log_email_all_openers, vcov = vcovHC(model_amount_log_email_all_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_log_email_all_openers <- linearHypothesis(model_amount_log_email_all_openers,
+                                                           "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                           vcov. = vcovHC(model_amount_log_email_all_openers, type = "HC3"))
+
+# Display the model results
+stargazer(model_amount_log_email1_openers, model_amount_log_email_all_openers,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_amount_log_email1_openers, robust_se_amount_log_email_all_openers),
+          title = "OLS Models for Donation Amount (Log-Transformed) Among Email Openers",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Log Amount (Email 1 Openers)", "Log Amount (All Email Openers)"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Donation Amount (Log-Transformed) Among Email Openers:\n")
+cat("Email 1 Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_log_email1_openers$Df[2], wald_test_amount_log_email1_openers$Res.Df[2],
+            wald_test_amount_log_email1_openers$F[2], wald_test_amount_log_email1_openers$`Pr(>F)`[2]))
+cat("\nAll Email Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_log_email_all_openers$Df[2], wald_test_amount_log_email_all_openers$Res.Df[2],
+            wald_test_amount_log_email_all_openers$F[2], wald_test_amount_log_email_all_openers$`Pr(>F)`[2]))
+
+# -------------------------------------------------------------
+# OLS Models for Donation Amounts (Outliers Removed)
+# -------------------------------------------------------------
+
+# Models for Email 1 Openers
+model_amount_no_outliers_email1_openers <- lm(amount_email_1_no_outliers ~ condition_model, data = email1_openers)
+robust_se_amount_no_outliers_email1_openers <- coeftest(model_amount_no_outliers_email1_openers, vcov = vcovHC(model_amount_no_outliers_email1_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_no_outliers_email1_openers <- linearHypothesis(model_amount_no_outliers_email1_openers,
+                                                                "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                                vcov. = vcovHC(model_amount_no_outliers_email1_openers, type = "HC3"))
+
+# Models for All Email Openers
+model_amount_no_outliers_email_all_openers <- lm(amount_any_no_outliers ~ condition_model, data = email_all_openers)
+robust_se_amount_no_outliers_email_all_openers <- coeftest(model_amount_no_outliers_email_all_openers, vcov = vcovHC(model_amount_no_outliers_email_all_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald test
+wald_test_amount_no_outliers_email_all_openers <- linearHypothesis(model_amount_no_outliers_email_all_openers,
+                                                                   "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                                   vcov. = vcovHC(model_amount_no_outliers_email_all_openers, type = "HC3"))
+
+# Display the model results
+stargazer(model_amount_no_outliers_email1_openers, model_amount_no_outliers_email_all_openers,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_amount_no_outliers_email1_openers, robust_se_amount_no_outliers_email_all_openers),
+          title = "OLS Models for Donation Amount (Outliers Removed) Among Email Openers",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Amount (Email 1 Openers)", "Amount (All Email Openers)"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Donation Amount (Outliers Removed) Among Email Openers:\n")
+cat("Email 1 Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_no_outliers_email1_openers$Df[2], wald_test_amount_no_outliers_email1_openers$Res.Df[2],
+            wald_test_amount_no_outliers_email1_openers$F[2], wald_test_amount_no_outliers_email1_openers$`Pr(>F)`[2]))
+cat("\nAll Email Openers:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_amount_no_outliers_email_all_openers$Df[2], wald_test_amount_no_outliers_email_all_openers$Res.Df[2],
+            wald_test_amount_no_outliers_email_all_openers$F[2], wald_test_amount_no_outliers_email_all_openers$`Pr(>F)`[2]))
+```
+
+\newpage
+
+### Baseline Balance Checks
+
+```{r echo=FALSE, results="asis"}
+# Check for balance in baseline variables across conditions
+# For full sample
+balance_full <- master_data %>%
+  group_by(condition) %>%
+  summarize(
+    N = n(),
+    Age_Mean = mean(age, na.rm = TRUE),
+    Age_SD = sd(age, na.rm = TRUE),
+    Male_Percentage = mean(man, na.rm = TRUE) * 100,
+    Prior_Click_Percentage = mean(prior_click, na.rm = TRUE) * 100
+  )
+
+# Display the balance table
+pander(balance_full,
+       caption = "Baseline Variables by Condition (Full Sample)",
+       split.table = Inf)
+
+# OLS models to test for baseline differences in full sample
+model_age_full <- lm(age ~ condition_model, data = master_data)
+robust_se_age_full <- coeftest(model_age_full, vcov = vcovHC(model_age_full, type = "HC3"))[, "Std. Error"]
+
+model_man_full <- lm(man ~ condition_model, data = master_data)
+robust_se_man_full <- coeftest(model_man_full, vcov = vcovHC(model_man_full, type = "HC3"))[, "Std. Error"]
+
+model_prior_click_full <- lm(prior_click ~ condition_model, data = master_data)
+robust_se_prior_click_full <- coeftest(model_prior_click_full, vcov = vcovHC(model_prior_click_full, type = "HC3"))[, "Std. Error"]
+
+# Wald tests for differences between Prosocial Excuse and Explicit conditions
+wald_test_age_full <- linearHypothesis(model_age_full,
+                                       "condition_modelProsocialExcuse = condition_modelExplicit",
+                                       vcov. = vcovHC(model_age_full, type = "HC3"))
+
+wald_test_man_full <- linearHypothesis(model_man_full,
+                                       "condition_modelProsocialExcuse = condition_modelExplicit",
+                                       vcov. = vcovHC(model_man_full, type = "HC3"))
+
+wald_test_prior_click_full <- linearHypothesis(model_prior_click_full,
+                                               "condition_modelProsocialExcuse = condition_modelExplicit",
+                                               vcov. = vcovHC(model_prior_click_full, type = "HC3"))
+
+# Display the model results
+stargazer(model_age_full, model_man_full, model_prior_click_full,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_age_full, robust_se_man_full, robust_se_prior_click_full),
+          title = "Baseline Balance Checks (Full Sample)",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Age", "Man", "Prior Click"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Baseline Differences (Full Sample):\n")
+cat("Age:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_age_full$Df[2], wald_test_age_full$Res.Df[2],
+            wald_test_age_full$F[2], wald_test_age_full$`Pr(>F)`[2]))
+cat("\nMan:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_man_full$Df[2], wald_test_man_full$Res.Df[2],
+            wald_test_man_full$F[2], wald_test_man_full$`Pr(>F)`[2]))
+cat("\nPrior Click:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_prior_click_full$Df[2], wald_test_prior_click_full$Res.Df[2],
+            wald_test_prior_click_full$F[2], wald_test_prior_click_full$`Pr(>F)`[2]))
+```
+
+
+\newpage
+
+```{r echo=FALSE, results="asis"}
+# For email openers
+balance_openers <- email_all_openers %>%
+  group_by(condition) %>%
+  summarize(
+    N = n(),
+    Age_Mean = mean(age, na.rm = TRUE),
+    Age_SD = sd(age, na.rm = TRUE),
+    Male_Percentage = mean(man, na.rm = TRUE) * 100,
+    Prior_Click_Percentage = mean(prior_click, na.rm = TRUE) * 100
+  )
+
+# Display the balance table
+pander(balance_openers,
+       caption = "Baseline Variables by Condition (Email Openers)",
+       split.table = Inf)
+
+# OLS models to test for baseline differences among openers
+model_age_openers <- lm(age ~ condition_model, data = email_all_openers)
+robust_se_age_openers <- coeftest(model_age_openers, vcov = vcovHC(model_age_openers, type = "HC3"))[, "Std. Error"]
+
+model_man_openers <- lm(man ~ condition_model, data = email_all_openers)
+robust_se_man_openers <- coeftest(model_man_openers, vcov = vcovHC(model_man_openers, type = "HC3"))[, "Std. Error"]
+
+model_prior_click_openers <- lm(prior_click ~ condition_model, data = email_all_openers)
+robust_se_prior_click_openers <- coeftest(model_prior_click_openers, vcov = vcovHC(model_prior_click_openers, type = "HC3"))[, "Std. Error"]
+
+# Wald tests for differences between Prosocial Excuse and Explicit conditions
+wald_test_age_openers <- linearHypothesis(model_age_openers,
+                                          "condition_modelProsocialExcuse = condition_modelExplicit",
+                                          vcov. = vcovHC(model_age_openers, type = "HC3"))
+
+wald_test_man_openers <- linearHypothesis(model_man_openers,
+                                          "condition_modelProsocialExcuse = condition_modelExplicit",
+                                          vcov. = vcovHC(model_man_openers, type = "HC3"))
+
+wald_test_prior_click_openers <- linearHypothesis(model_prior_click_openers,
+                                                  "condition_modelProsocialExcuse = condition_modelExplicit",
+                                                  vcov. = vcovHC(model_prior_click_openers, type = "HC3"))
+
+# Display the model results
+stargazer(model_age_openers, model_man_openers, model_prior_click_openers,
+          type = stargazer_type,
+          header = FALSE,
+          style = "default",
+          omit.stat = c("f", "ser", "adj.rsq"),
+          report = "vc*s",
+          se = list(robust_se_age_openers, robust_se_man_openers, robust_se_prior_click_openers),
+          title = "Baseline Balance Checks (Email Openers)",
+          covariate.labels = c("Explicit", "Prosocial Excuse"),
+          dep.var.caption = "Dependent Variable:",
+          dep.var.labels = c("Age", "Man", "Prior Click"),
+          notes = "+p<0.1; *p<0.05; **p<0.01; ***p<0.001",
+          notes.append = FALSE
+          )
+
+# Print Wald test results
+cat("\nWald Tests for Baseline Differences (Email Openers):\n")
+cat("Age:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_age_openers$Df[2], wald_test_age_openers$Res.Df[2],
+            wald_test_age_openers$F[2], wald_test_age_openers$`Pr(>F)`[2]))
+cat("\nMan:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_man_openers$Df[2], wald_test_man_openers$Res.Df[2],
+            wald_test_man_openers$F[2], wald_test_man_openers$`Pr(>F)`[2]))
+cat("\nPrior Click:\n")
+cat(sprintf("F(%d, %.0f) = %.3f, p = %.3g\n",
+            wald_test_prior_click_openers$Df[2], wald_test_prior_click_openers$Res.Df[2],
+            wald_test_prior_click_openers$F[2], wald_test_prior_click_openers$`Pr(>F)`[2]))
+```
